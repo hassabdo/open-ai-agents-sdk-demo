@@ -1,3 +1,4 @@
+import datetime
 import os
 from agents import (
     Agent,
@@ -5,6 +6,7 @@ from agents import (
     function_tool,
     set_default_openai_key,
 )
+from agents.tool import UserLocation
 from fastapi import FastAPI
 from pydantic import BaseModel
 import requests
@@ -54,14 +56,27 @@ def save_event(data: ICalRequest):
 
 
 @function_tool
+def get_current_date():
+    print("get_current_date")
+    return {"date": datetime.datetime.now().strftime("%Y-%m-%d")}
+
+
+@function_tool
 def get_weather(request: WeatherRequest):
+    print("request", request)
     lat, lon = get_lat_lon(request.city, request.country)
     api_response = requests.get(
-        f"https://api.openweathermap.org/data/3.0/onecall/day_summary?lat={lat}&lon={lon}&date={request.date}&appid={OPEN_WEATHER_API_KEY}"
+        f"https://api.openweathermap.org/data/3.0/onecall?lat={lat}&lon={lon}&exclude=hourly,current,minutely&appid={OPEN_WEATHER_API_KEY}"
     )
     response = api_response.json()
-    print(response)
-    return response
+    weather = response["daily"]
+    for day in weather:
+        day_time = datetime.datetime.fromtimestamp(day["dt"]).strftime("%Y-%m-%d")
+        if day_time == request.date:
+            response = f"Location: {request.city}, {request.country}\nDate: {request.date}\nWeather: {day}"
+            print("get_weather : ", response)
+            return response
+    return "Weather data not found"
 
 
 calendar_agent = Agent(
@@ -78,13 +93,19 @@ calendar_agent = Agent(
 activities_agent = Agent(
     model="gpt-4o",
     name="Activities Agent",
-    instructions="""You are activities search assistant. You should provide activities based on location and weather.
-        - Search in web for activities in a the user's specific location and date
-        - Based on the weather given, respond in a way that provides a summary of possible activities so that for example if it's raining privilege indoor activities. 
-        - Format the activities to provide an explicit link if exists, full address and any other contact informations. 
-        - Ask the user if he wants to save an activity.
+    instructions="""You are entertainment activities search assistant. You should recommend activities based on location and weather.
+        - Search in the web for entertainment activities or events on the given date and the given location.
+        - Filter activities based on the weather so that for example if it's raining privilege indoor activities.
+        - Respond with weather summary and a list of recommended activities. 
+        - Ask the user if he wants to save an activity in calendar.
         """,
-    tools=[WebSearchTool()],
+    tools=[
+        WebSearchTool(
+            user_location=UserLocation(
+                type="approximate", country="FR", city="Villeurbanne"
+            )
+        )
+    ],
     handoff_description="Activities Agent will provide activities information.",
 )
 
@@ -92,27 +113,29 @@ weather_agent = Agent(
     model="gpt-4o",
     name="Weather Agent",
     instructions="""You are a weather assistant. You use the OpenWeatherMap API to get weather information.
-        - Format the input as json {"city": "city name", "country": "country code", "date": "yyyy-mm-dd"}.
-        - Format the output as text providing a weather summary with location and date informations.
-        - Route the conversation to Activities Agent if you have a weather summary.
+        - Format the input as json {"city": "city name", "country": "ISO country code", "date": "yyyy-mm-dd"}.
+        - Based on the input, get the weather information for the specific location and date.
+        - Respond with the weather informations.
+        - Route the conversation to Activities Agent.
         """,
     tools=[get_weather],
     handoffs=[activities_agent],
     handoff_description="Weather Agent will provide weather information and route the conversation to Activities Agent.",
 )
 
-planner_agent = Agent(
+activity_planner_agent = Agent(
     model="gpt-4o",
-    name="Activity Planner agent",
+    name="Activity Planner Agent",
     instructions="""You are an activity planning assistant.
+        Your role is to gather date and location information from the user.
         When a user asks for an activity recommendation you should :
-        - Ask for the exact date if the user didn't say anything about it.
-        - Ask for date confirmation if the user provides a date.
-        - Ask for the user's location informations.
-        If you have the date and location informations, route the conversation to Weather Agent.
+        - Ask for the date.
+        - Ask for the location.
+        - If the user doesn't provide an exact date, extract the date based on the conversation context and current date.
+        Respond with the exact date, city and country.
         """,
-    handoffs=[weather_agent],
-    handoff_description="Activity Planner agent will ask for date and location informations and route the conversation to Weather Agent.",
+    tools=[get_current_date],
+    handoff_description="Activity Planner Agent will ask the user for date and location of his request.",
 )
 
 triage_agent = Agent(
@@ -120,9 +143,11 @@ triage_agent = Agent(
     name="Triage Agent",
     instructions="""Route the conversation as follow :
     - To Calendar Agent there is a list of activities and the user wants to save an activity.
-    - To Activity Planner agent otherwise.
+    - To Activity Planner Agent if date and location are not provided.
+    - To Weather Agent if date and location are provided.
+    - To Activities Agent if weather, date and location are provided.
     """,
-    handoffs=[planner_agent, calendar_agent],
+    handoffs=[activity_planner_agent, calendar_agent, weather_agent, activities_agent],
 )
 
 starting_agent = triage_agent
