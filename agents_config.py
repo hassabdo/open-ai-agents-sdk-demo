@@ -50,7 +50,7 @@ def get_lat_lon(city: str, country: str):
 
 @function_tool
 def save_event(data: ICalRequest):
-    with open(f"calendar/{data.filename}.ics", "w") as file:
+    with open(f"calendar/{data.filename}.ics", "w", encoding="utf-8") as file:
         file.write(data.data)
     return True
 
@@ -74,7 +74,7 @@ def get_weather(request: WeatherRequest):
         day_time = datetime.datetime.fromtimestamp(day["dt"]).strftime("%Y-%m-%d")
         if day_time == request.date:
             response = f"Location: {request.city}, {request.country}\nDate: {request.date}\nWeather: {day}"
-            print("get_weather : ", response)
+            print("get_weather : ", day["summary"])
             return response
     return "Weather data not found"
 
@@ -94,9 +94,9 @@ activities_agent = Agent(
     model="gpt-4o",
     name="Activities Agent",
     instructions="""You are entertainment activities search assistant. You should recommend activities based on location and weather.
-        - Search in the web for entertainment activities or events on the given date and the given location.
+        - Search in the web for entertainment activities or events on the given date and location.
         - Filter activities based on the weather so that for example if it's raining privilege indoor activities.
-        - Respond with weather summary and a list of recommended activities. 
+        - Respond in enthusiastic way with a weather summary and a list of recommended activities. 
         - Ask the user if he wants to save an activity in calendar.
         """,
     tools=[
@@ -129,9 +129,11 @@ activity_planner_agent = Agent(
     instructions="""You are an activity planning assistant.
         Your role is to gather date and location information from the user.
         When a user asks for an activity recommendation you should :
-        - Ask for the date.
+        - Use the tool to get the current date.
+        - Ask for the date of his plan.
+        - Guess the date based on the conversation context and current date if the user doesn't provide an exact date.
         - Ask for the location.
-        - If the user doesn't provide an exact date, extract the date based on the conversation context and current date.
+        - Ask for informations confirmation.
         Respond with the exact date, city and country.
         """,
     tools=[get_current_date],
@@ -142,9 +144,9 @@ triage_agent = Agent(
     model="gpt-4o",
     name="Triage Agent",
     instructions="""Route the conversation as follow :
-    - To Calendar Agent there is a list of activities and the user wants to save an activity.
+    - To Calendar Agent if there is a list of activities and the user wants to save an activity.
     - To Activity Planner Agent if date and location are not provided.
-    - To Weather Agent if date and location are provided.
+    - To Weather Agent user confirms informations provided.
     - To Activities Agent if weather, date and location are provided.
     """,
     handoffs=[activity_planner_agent, calendar_agent, weather_agent, activities_agent],
